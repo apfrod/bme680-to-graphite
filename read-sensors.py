@@ -6,11 +6,17 @@
 
 import bme680
 import time
+import os
 import socket
 
 CARBON_SERVER = '0.0.0.0'
 CARBON_PORT = 2003
-DEBUG = True
+DEBUG = False
+
+# Set the humidity baseline to 40%, an optimal indoor humidity.
+hum_baseline = 40.0
+# calculation of air_quality_score (25:75, humidity:gas)
+hum_weighting = 0.25
 
 sensor = bme680.BME680()
 
@@ -58,29 +64,89 @@ sock.connect((CARBON_SERVER, CARBON_PORT))
 def send_msg(message):
     sock.sendall(message)
 
+def temperature_of_raspberry_pi():
+    cpu_temp = os.popen("vcgencmd measure_temp").readline()
+    cpu_temp = cpu_temp.replace("temp=", "")
+    return cpu_temp.replace("'C", "").strip()
+
+
+start_time = time.time()
+curr_time = time.time()
+burn_in_time = 300
+
+burn_in_data = []
+
 try:
+    # Collect gas resistance burn-in values, then use the average
+    # of the last 50 values to set the upper limit for calculating
+    # gas_baseline.
+    print('Collecting gas resistance burn-in data for 5 mins\n')
+    while curr_time - start_time < burn_in_time:
+        curr_time = time.time()
+        if sensor.get_sensor_data() and sensor.data.heat_stable:
+            gas = sensor.data.gas_resistance
+            burn_in_data.append(gas)
+            time.sleep(1)
+
+    print('Gas: {0} Ohms'.format(gas))
+
+    gas_baseline = sum(burn_in_data[-50:]) / 50.0
+    print('Gas baseline: {0} Ohms, humidity baseline: {1:.2f} %RH\n'.format(
+        gas_baseline,
+        hum_baseline))
+
     while True:
 
-	if sensor.get_sensor_data():
-	    timestamp = int(time.time())
-	    lines = [
+	    if sensor.get_sensor_data():
+		timestamp = int(time.time())
+		lines = [
+		'sensor.cpu            {0} {1}'.format(temperature_of_raspberry_pi(),    timestamp),
 		'sensor.temperature    {0:.2f} {1}'.format(sensor.data.temperature,    timestamp),
 		'sensor.pressure       {0:.2f} {1}'.format(sensor.data.pressure,       timestamp),
 		'sensor.humidity       {0:.2f} {1}'.format(sensor.data.humidity,       timestamp)
-	    ]
-	    if sensor.data.heat_stable:
-		lines.append(
-		    'sensor.gas_resistance {0:.2f} {1}'.format(sensor.data.gas_resistance, timestamp)
-		)
+		]
+		if sensor.data.heat_stable:
+		    lines.append(
+			'sensor.gas_resistance {0:.2f} {1}'.format(sensor.data.gas_resistance, timestamp)
+		    )
+		    gas = sensor.data.gas_resistance
+		    gas_offset = gas_baseline - gas
+		    hum = sensor.data.humidity
+		    hum_offset = hum - hum_baseline
+		    # Calculate hum_score as the distance from the hum_baseline.
+		    if hum_offset > 0:
+			hum_score = (100 - hum_baseline - hum_offset)
+			hum_score /= (100 - hum_baseline)
+			hum_score *= (hum_weighting * 100)
 
-	    message = '\n'.join(lines) + '\n'
+		    else:
+			hum_score = (hum_baseline + hum_offset)
+			hum_score /= hum_baseline
+			hum_score *= (hum_weighting * 100)
 
-	    if DEBUG == True:
-		print(message)
+		    # Calculate gas_score as the distance from the gas_baseline.
+		    if gas_offset > 0:
+			gas_score = (gas / gas_baseline)
+			gas_score *= (100 - (hum_weighting * 100))
 
-	    send_msg(message)
+		    else:
+			gas_score = 100 - (hum_weighting * 100)
 
-	time.sleep(1)
+		    # Calculate air_quality_score.
+		    air_quality_score = hum_score + gas_score
+
+		    lines.append(
+			'sensor.air_quality_score {0:.2f} {1}'.format(air_quality_score, timestamp)
+		    )
+
+		message = '\n'.join(lines) + '\n'
+
+		if DEBUG == True:
+		    print(message)
+
+		send_msg(message)
+
+		time.sleep(1)
 
 except KeyboardInterrupt:
     pass
