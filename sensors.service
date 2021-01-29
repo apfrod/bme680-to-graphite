@@ -1,6 +1,7 @@
 [Unit]
 Description=Read Sensors & log to graphite
 After=multi-user.target
+Wants=carbon-cache.service
 
 [Service]
 Type=idle
@@ -10,4 +11,3 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
-Wants=carbon-cache.service
