@@ -37,4 +37,4 @@ edit /etc/grafana/grafana.ini http_port to set port
 visit pi_ip:port to get grafana frontend
 
 add graphite-api source in grafana: http://localhost:8888
-import dashboard.json cwin grafana
+import dashboard.json in grafana
